@@ -6,3 +6,8 @@
 ## Structure ##
 
 Define a proportion of worker to respect
+
+## TODOS ##
+
+- Is planter replacable by harverter ?
+- how to define which tree to plant ?
