@@ -20,7 +20,7 @@ const START: i32 = 0;
 const EARLY: i32 = 1;
 const MID: i32 = 2;
 const END: i32 = 3;
-const FARM: i32 = 4;
+const CUT_ALL: i32 = 4;
 
 // COST INDEXES or OBJECTIVES
 
@@ -35,11 +35,22 @@ const PLANT_PLUM: usize = 7;
 const PLANT_LEMON: usize = 8;
 const PLANT_APPLE: usize = 9;
 const PLANT_BANANA: usize = 10;
+const CHOP_PLUM: usize = 11;
+const CHOP_LEMON: usize = 12;
+const CHOP_APPLE: usize = 13;
+const CHOP_BANANA: usize = 14;
 
 // UTILITIES
 
 fn manhattan_dist(a: (i32, i32), b: (i32, i32)) -> i32 {
     i32::abs(a.0 - b.0) + i32::abs(a.1 - b.1)
+}
+
+fn safe_push_positions(positions: &Vec<(i32, i32)>, to_vec: &mut Vec<(i32, i32)>, max_h: i32, max_w: i32) {
+    positions
+    .iter()
+    .filter(|(x, y)| *x >= 0 && *y >= 0 && *x < max_w && *y < max_h)
+    .for_each(|pos| to_vec.push(*pos))
 }
 
 // TREE PART
@@ -65,9 +76,10 @@ impl Fruit {
 
     fn from_usize(fruit_as_usize: usize) -> Fruit {
         match fruit_as_usize {
-            PLUM => Fruit::Plum,
-            LEMON => Fruit::Lemon,
-            APPLE => Fruit::Apple,
+            PLUM | PLANT_PLUM | CHOP_PLUM => Fruit::Plum,
+            LEMON | PLANT_LEMON | CHOP_LEMON => Fruit::Lemon,
+            APPLE | PLANT_APPLE | CHOP_APPLE => Fruit::Apple,
+            BANANA | PLANT_BANANA | CHOP_BANANA => Fruit::Banana,
             _ => unreachable!("Unknowm fruit_as_usize {fruit_as_usize}")
         }
     }
@@ -165,12 +177,13 @@ impl TrollType {
             return TrollType::Poly
         }
         if charac[CAPA] > 0 {
-            if charac[CHOP] > 2 {
+            if charac[CHOP] > 0 {
+                if charac[CAPA] == 4 {
+                    return TrollType::Choper
+                }
                 return TrollType::Miner
             }
-            if charac[CHOP] > 0 {
-                return TrollType::Choper
-            }
+
             return TrollType::Peasant
         }
         return TrollType::EnemyChoper
@@ -179,15 +192,23 @@ impl TrollType {
     fn charac_need(&self, game_state: i32, mine_dist: i32) -> [i32; 4] {
         match self {
             TrollType::Poly => [1 + game_state / 2, 1 + game_state / 2, 1 + game_state / 2, 1 + game_state / 2],
-            TrollType::Choper => [2, 4, 0, 1],
+            TrollType::Choper => [2, 4, 0, 3],
             TrollType::Miner => [
-                    1 + i32::min(1 + game_state, mine_dist / 2),
-                    1 + i32::min(2 + game_state, mine_dist / 2),
+                    1 + i32::min(1 + game_state, mine_dist / 4),
+                    1 + i32::min(2, mine_dist / 4),
                     0,
-                    2 + game_state / 2
+                    match game_state {
+                        START => 1,
+                        _ => {
+                            i32::min(
+                                1 + i32::min(2, mine_dist / 4),
+                                1 + i32::max(0, 5 - mine_dist / 4)
+                            )
+                        }
+                    }
                 ],
             TrollType::EnemyChoper => [2 + game_state, 0, 0, 1 + game_state],
-            TrollType::Peasant => [1 + game_state, 1 + game_state, 1 + game_state, 0]
+            TrollType::Peasant => [1, i32::min(2, game_state), i32::min(2, game_state), 0]
         }
     }
 
@@ -212,6 +233,28 @@ impl TrollType {
             4 => TrollType::EnemyChoper,
             _ => unreachable!("unknown troll type {n}")
         }
+    }
+
+    fn to_usize(&self) -> usize {
+        match self {
+            TrollType::Poly => 0,
+            TrollType::Peasant => 1, 
+            TrollType::Miner => 2,
+            TrollType::Choper => 3,
+            TrollType::EnemyChoper => 4
+        }
+    }
+}
+
+impl fmt::Display for TrollType {
+    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+        write!(f, "{}", match self {
+            TrollType::Choper => "CHOPER",
+            TrollType::EnemyChoper => "ENEMY_CHOPER",
+            TrollType::Miner => "MINER",
+            TrollType::Peasant => "PEASANT",
+            TrollType::Poly => "POLY"
+        })
     }
 }
 
@@ -299,19 +342,50 @@ impl Troll {
     fn dist_from_base(&self, grid: &Grid) -> i32 {
         grid.drop_positions
         .iter()
-        .map(|&(pos)| manhattan_dist(pos, (self.x, self.y)))
+        .map(|&pos| manhattan_dist(pos, (self.x, self.y)))
         .min()
         .unwrap()
     }
 
     // POSSIBILITIES
 
-    fn can_harvest(&self, grid: &Grid) -> bool {
+    fn can_harvest(&self, grid: &Grid, trees: &Vec<Tree>) -> bool {
         match &grid.grid[self.y as usize][self.x as usize] {
             Tile::Grass(entities) => {
                 entities.iter().any(|e| {
                     match e {
-                        Entity::Tree(t) => t.nb_fruit > 0,
+                        Entity::Tree(t) => {
+                            t.nb_fruit > 0 && match self.objective {
+                                ANY => true,
+                                n  => {
+                                    match trees
+                                        .iter()
+                                        .any(|tree| tree.fruit == Fruit::from_usize(n) && tree.nb_fruit > 0) {
+                                            true => t.fruit == Fruit::from_usize(n),
+                                            false => true
+                                        }
+                                }
+                            }
+                        }
+                        _ => false
+                    }
+                })
+            }
+            _ => false
+        }
+    }
+
+    fn can_chop(&self, grid: &Grid) -> bool {
+        match &grid.grid[self.y as usize][self.x as usize] {
+            Tile::Grass(entities) => {
+                entities.iter().any(|e| {
+                    match e {
+                        Entity::Tree(t) => {
+                            t.size == 4 && match self.objective {
+                                ANY => true,
+                                n  => t.fruit == Fruit::from_usize(n)
+                            }
+                        }
                         _ => false
                     }
                 })
@@ -328,12 +402,29 @@ impl Troll {
         (self.x, self.y) == mine_position
     }
 
-    fn 
+    fn can_pick(&self, drop_positions: &Vec::<(i32, i32)>, inventory: &Inventory) -> bool {
+        inventory.resources[self.objective - 7] > 0 &&
+        drop_positions.contains(&(self.x, self.y)) &&
+        !self.is_full()
+    }
 
     fn can_plant(&self, grid: &Grid) -> bool {
-        self.have_fruit(Fruit::from_usize(self.objective - 7)) &&
+        self.items
+        .iter()
+        .take(4)
+        .any(|n| *n > 0) &&
         grid.grid[self.y as usize][self.x as usize].can_be_planted() &&
+        match grid.nearest_empty_place_to_plant(3) {
+            None => false,
+            Some((x, y)) => manhattan_dist((self.x, self.y), grid.shack_position) <= 1 + manhattan_dist((x, y), grid.shack_position)
+        }
+    }
 
+    fn can_grief(&self, grid: &Grid, trees: &Vec<Tree>) -> bool {
+        match grid.tree_to_grief(trees) {
+            None => false,
+            Some((x, y)) => self.x == x && self.y == y
+        }
     }
 
     // GOTOS
@@ -346,15 +437,25 @@ impl Troll {
         self.go_to(tree.x, tree.y)
     }
 
-    fn go_to_drop(&self, drop_pos: &Vec::<(i32, i32)>) -> String {
-        let pos = drop_pos
+    fn go_to_drop(&self, grid: &Grid) -> Option<String> {
+        match grid.drop_positions
             .iter()
+            .filter(|(x, y)| grid.grid[*y as usize][*x as usize].can_walk_through())
             .min_by(|&a, &b| {
                 (i32::abs(a.0 - self.x) + i32::abs(a.1 - self.y)).cmp(
                     &(i32::abs(b.0 - self.x) + i32::abs(b.1 - self.y))
                 )
-            }).unwrap();
-        self.go_to(pos.0, pos.1)
+            }) {
+            None => None,
+            Some((x, y)) => Some(self.go_to(*x, *y))
+        }
+    }
+
+    fn go_to_grief(&self, grid: &Grid, trees: &Vec<Tree>) -> Option<String> {
+        match grid.tree_to_grief(trees) {
+            Some(pos) => Some(self.go_to(pos.0, pos.1)),
+            None => None
+        }
     }
 
     // FINDS ALGO
@@ -375,10 +476,45 @@ impl Troll {
         })
     }
 
-    fn find_shorter_fruit<'a>(&self, trees: &'a Vec::<Tree>, fruit: Fruit) -> Option<(i32, &'a Tree)> {
+    fn find_shorter_tree_to_chop<'a>(&self, trees: &'a Vec::<Tree>) -> Option<(i32, &'a Tree)> {
         trees.iter()
         .filter(|tree| {
+            match tree.fruit {
+                Fruit::Apple => false,
+                _ => match tree.size {
+                    4 => true,
+                    _ => false
+                }
+            }
+        })
+        .map(|tree| {
+            (i32::abs(self.x - tree.x) + i32::abs(self.y - tree.y), tree)
+        })
+        .min_by(|a, b| {
+            a.0.cmp(&b.0)
+        })
+    }
+
+    fn find_shorter_fruit<'a>(&self, trees: &'a Vec::<Tree>, fruit: Fruit) -> Option<(i32, &'a Tree)> {
+        match trees.iter()
+        .filter(|tree| {
             tree.fruit == fruit && tree.nb_fruit > 0
+        })
+        .map(|tree| {
+            (i32::abs(self.x - tree.x) + i32::abs(self.y - tree.y), tree)
+        })
+        .min_by(|a, b| {
+            a.0.cmp(&b.0)
+        }) {
+            None => self.find_shorter_tree(trees),
+            Some(a) => Some(a)
+        }
+    }
+
+    fn find_shorter_fruit_to_chop<'a>(&self, trees: &'a Vec::<Tree>, fruit: Fruit) -> Option<(i32, &'a Tree)> {
+        trees.iter()
+        .filter(|tree| {
+            tree.fruit == fruit && tree.size == 4
         })
         .map(|tree| {
             (i32::abs(self.x - tree.x) + i32::abs(self.y - tree.y), tree)
@@ -402,7 +538,33 @@ impl Troll {
         format!("DROP {}", self.id)
     }
 
-    fn act_as_poly(&self, grid: &Grid, trees: &Vec::<Tree>, inventory: &Inventory) -> Option<String> {
+    fn pick(&self) -> String {
+        format!("PICK {} {}", self.id, Fruit::from_usize(self.objective))
+    }
+
+    fn plant(&self) -> String {
+        match self.have_fruit(Fruit::from_usize(self.objective)) {
+            true => format!("PLANT {} {}", self.id, Fruit::from_usize(self.objective)),
+            false => format!("PLANT {} {}", self.id, self.items
+                                                        .iter()
+                                                        .find(|n| **n > 0)
+                                                        .unwrap()
+            )
+        }
+
+    }
+
+    fn chop(&self) -> String {
+        format!("CHOP {}", self.id)
+    }
+
+    fn act_as_poly(&mut self, grid: &Grid, trees: &Vec::<Tree>, inventory: &Inventory) -> Option<String> {
+        if self.is_full() && (self.items[4] > 0 || self.items[5] > 0) {
+            if self.can_drop(&grid.drop_positions) {
+                return Some(self.drop())
+            }
+            return self.go_to_drop(grid)
+        }
         match self.objective {
             IRON => self.act_as_miner(grid, trees),
             WOOD => self.act_as_choper(grid, trees),
@@ -415,15 +577,25 @@ impl Troll {
             return Some(self.drop())
         }
         if self.is_full() {
-            return Some(self.go_to_drop(&grid.drop_positions))
+            return self.go_to_drop(grid)
         }
-        None
+        if self.can_chop(grid) {
+            return Some(self.chop())
+        }
+        let best_tree = match self.objective {
+            ANY => self.find_shorter_tree_to_chop(trees),
+            fruit => self.find_shorter_fruit_to_chop(trees, Fruit::from_usize(fruit))
+        };
+        match best_tree {
+            Some((_, tree)) => Some(self.go_to_tree(tree)),
+            None => None
+        }
     }
 
-    fn act_as_peasant(&self, grid: &Grid, trees: &Vec::<Tree>, inventory: &Inventory) -> Option<String> {
+    fn act_as_peasant(&mut self, grid: &Grid, trees: &Vec::<Tree>, inventory: &Inventory) -> Option<String> {
         match self.objective {
-            [0..3] | 5 => self.act_as_harvester(grid, trees),
-            [7..10] => self.act_as_planter(grid, trees, inventory),
+            PLUM..=BANANA | ANY => self.act_as_harvester(grid, trees),
+            PLANT_PLUM..=PLANT_BANANA => self.act_as_planter(grid, trees, inventory),
             _ => unreachable!("peasant cannot be asked for {}", self.objective)
         }
     }
@@ -433,9 +605,9 @@ impl Troll {
             return Some(self.drop())
         }
         if self.is_full() {
-            return Some(self.go_to_drop(&grid.drop_positions))
+            return self.go_to_drop(grid)
         }
-        if self.can_harvest(grid) {
+        if self.can_harvest(grid, trees) {
             return Some(self.harvest())
         }
         let best_tree = match self.objective {
@@ -448,44 +620,49 @@ impl Troll {
         }
     }
 
-    fn act_as_planter(&self, grid: &Grid, trees: &Vec::<Tree>, inventory: &Inventory) -> Option<String> {
-        let fruit_as_usize = self.objective - 7;
+    fn act_as_planter(&mut self, grid: &Grid, trees: &Vec::<Tree>, inventory: &Inventory) -> Option<String> {
+        let fruit_as_usize = self.objective -7;
         let wanted_fruit = Fruit::from_usize(fruit_as_usize);
         let have_fruit = self.have_fruit(wanted_fruit);
         if !have_fruit {
-            if self.can_drop(&grid.drop_positions) {
-                return Some(self.drop())
+            if self.items.len() > 0 {
+                if self.can_plant(grid) {
+                    return Some(self.plant())
+                }
+                match grid.nearest_empty_place_to_plant(3) {
+                    None => {},
+                    Some((x, y)) => return Some(self.go_to(x, y))
+                }
             }
-            if self.is_full() {
-                return Some(self.go_to_drop(&grid.drop_positions))
-            }
-            if self.can_pick(inventory) {
+            if self.can_pick(&grid.drop_positions, inventory) {
                 return Some(self.pick())
             }
-            if self.can_harvest_fruit(wanted_fruit) {
+            if self.can_harvest(grid, trees) {
                 return Some(self.harvest())
             }
             let best_tree = self.find_shorter_fruit(trees, wanted_fruit);
             match best_tree {
                 None => {
                     if inventory.resources[fruit_as_usize] > 0 {
-                        return Some(self.go_to_drop(&grid.drop_positions))
+                        return self.go_to_drop(grid)
                     }
                 },
                 Some((dist, tree)) => {
                     if inventory.resources[fruit_as_usize] > 0 && (dist > self.dist_from_base(grid)) {
-                        return Some(self.go_to_drop(&grid.drop_positions))
+                        return self.go_to_drop(grid)
                     }
                     return Some(self.go_to_tree(tree))
                 }
             }
-
         }
         if have_fruit {
             if self.can_plant(grid) {
                 return Some(self.plant())
             }
-            return Some(self.go_to_nearest_empty_place(grid))
+            match grid.nearest_empty_place_to_plant(3) {
+                None => {},
+                Some((x, y)) => return Some(self.go_to(x, y))
+            }
         }
 
         // If the target is impossible, do whatever.
@@ -494,11 +671,14 @@ impl Troll {
     }
 
     fn act_as_miner(&self, grid: &Grid, trees: &Vec::<Tree>) -> Option<String> {
+        if self.objective == WOOD {
+            return self.act_as_choper(grid, trees)
+        }
         if self.can_drop(&grid.drop_positions) {
             return Some(self.drop())
         }
         if self.is_full() {
-            return Some(self.go_to_drop(&grid.drop_positions))
+            return self.go_to_drop(grid)
         }
         if self.can_mine(grid.mine_position) {
             return Some(self.mine())
@@ -507,7 +687,10 @@ impl Troll {
     }
 
     fn act_as_enemy_choper(&self, grid: &Grid, trees: &Vec::<Tree>) -> Option<String> {
-        None
+        if self.can_grief(grid, trees) {
+            return Some(self.chop())
+        }
+        self.go_to_grief(grid, trees)
     }
 
     // ENTRYPOINTS
@@ -517,7 +700,8 @@ impl Troll {
         self.assigned = true;
     }
 
-    fn act(&self, grid: &Grid, trees: &Vec::<Tree>, inventory: &Inventory) -> Option<String> {
+    fn act(&mut self, grid: &Grid, trees: &Vec::<Tree>, inventory: &Inventory) -> Option<String> {
+        eprintln!("I'm a {}", self.class);
         match self.class {
             TrollType::Poly => self.act_as_poly(grid, trees, inventory),
             TrollType::Choper => self.act_as_choper(grid, trees),
@@ -532,14 +716,14 @@ impl Troll {
 fn ask_for_resources(trolls: &mut Vec<Troll>, needs: [i32; 6]) {
     if needs[IRON] > 0 {
         trolls
-        .iter()
-        .filter(|&troll| match troll.class {
+        .iter_mut()
+        .filter(|troll| match troll.class {
             TrollType::Poly => true,
             _ => false
         })
         .for_each(|troll| troll.target(IRON));
     }
-    let mut peasants = trolls.iter().filter(|&troll| {
+    let mut peasants = trolls.iter_mut().filter(|troll| {
         match troll.class {
             TrollType::Peasant => true,
             TrollType::Poly => !troll.assigned,
@@ -596,10 +780,11 @@ impl Inventory {
     // POSSIBILITIES
 
     fn what_is_needed(&self, target: [i32; 6]) -> Option<[i32; 6]> {
-        let needs = (0..4).map(
-            |idx| i32::min(0, target[idx] - self.resources[idx])
-        ).collect::<Vec::<i32>>();
-        match needs.iter().all(|n| n == 0) {
+        let needs = (0..6).fold([0, 0, 0, 0, 0, 0], |mut acc, idx| {
+            acc[idx] = i32::max(0, target[idx] - self.resources[idx]);
+            acc
+        });
+        match needs.iter().all(|n| *n == 0) {
             true => None,
             false => Some(needs)
         }
@@ -608,6 +793,7 @@ impl Inventory {
     // ORDER
 
     fn train_asked(&self, charac: [i32; 4], cost: [i32; 6], trolls: &mut Vec<Troll>) -> Option<String> {
+        eprintln!("charac: {:?}, cost: {:?}", charac, cost);
         match self.what_is_needed(cost) {
             None => Some(format!("TRAIN {} {} {} {}", charac[MS], charac[CAPA], charac[HARV], charac[CHOP])),
             Some(needs) => {
@@ -673,7 +859,7 @@ impl Tile {
         }
     }
 
-    fn get_tree(&self) => Option<Tree> {
+    fn get_tree(&self) -> Option<&Tree> {
         match self {
             Tile::Grass(entities) => {
                 match entities
@@ -690,12 +876,27 @@ impl Tile {
         }
     }
 
-    fn can_be_planted(&self) => bool {
+    fn can_be_planted(&self) -> bool {
         match self {
             Tile::Grass(_) => match self.get_tree() {
                 None => true,
                 _ => false
             },
+            _ => false
+        }
+    }
+
+    fn can_walk_through(&self) -> bool {
+        match self {
+            Tile::Grass(entities) => match entities
+                .iter()
+                .any(|entity| match entity {
+                    Entity::Troll(troll) => troll.player == 0,
+                    _ => false
+                }) {
+                    true => false,
+                    false => true
+                }
             _ => false
         }
     }
@@ -706,6 +907,7 @@ struct Grid {
     pub initial_grid: Vec::<Vec::<Tile>>,
     pub grid: Vec::<Vec::<Tile>>,
     pub shack_position: (i32, i32),
+    pub enemy_shack_position: (i32, i32),
     pub drop_positions: Vec::<(i32, i32)>,
     pub mine_position: (i32, i32),
     pub mine_dist: i32,
@@ -721,7 +923,8 @@ impl Grid {
         let width = parse_input!(inputs[0], i32);
         let height = parse_input!(inputs[1], i32);
         let mut raw_mine_positions: Vec::<(i32, i32)> = vec![];
-        let shack_position: (i32, i32);
+        let mut shack_position: (i32, i32) = (0, 0);
+        let mut enemy_shack_position: (i32, i32) = (0, 0);
         let mut raw_drop_positions = vec![];
         let grid =
             (0..height)
@@ -734,18 +937,25 @@ impl Grid {
                         let pos_x = acc_inner.len() as i32;
                         let pos_y = acc_outer.len() as i32;
                         shack_position = (pos_x, pos_y);
-                        raw_drop_positions.push((pos_x + 1, pos_y));
-                        raw_drop_positions.push((pos_x - 1, pos_y));
-                        raw_drop_positions.push((pos_x, pos_y + 1));
-                        raw_drop_positions.push((pos_x, pos_y - 1));
+                        safe_push_positions(
+                            &vec![(pos_x + 1, pos_y), (pos_x - 1, pos_y), (pos_x, pos_y + 1), (pos_x, pos_y - 1)],
+                            &mut raw_drop_positions,
+                            height,
+                            width
+                        );
+                    }
+                    if c == '1' {
+                        enemy_shack_position = (acc_inner.len() as i32, acc_outer.len() as i32)
                     }
                     if c == '+' {
                         let pos_x = acc_inner.len() as i32;
                         let pos_y = acc_outer.len() as i32;
-                        raw_mine_positions.push((pos_x + 1, pos_y));
-                        raw_mine_positions.push((pos_x - 1, pos_y));
-                        raw_mine_positions.push((pos_x, pos_y + 1));
-                        raw_mine_positions.push((pos_x, pos_y - 1));
+                        safe_push_positions(
+                            &vec![(pos_x + 1, pos_y), (pos_x - 1, pos_y), (pos_x, pos_y + 1), (pos_x, pos_y - 1)],
+                            &mut raw_mine_positions,
+                            height,
+                            width
+                        );
                     }
                     acc_inner.push(Tile::from_char(c));
                     acc_inner
@@ -755,17 +965,18 @@ impl Grid {
         let drop_positions = raw_drop_positions
             .iter()
             .filter(|(x, y)| {
-                match grid[y as usize][x as usize] {
+                match grid[*y as usize][*x as usize] {
                     Tile::Grass(_) => true,
                     _ => false
                 }
             })
-            .collect::<Vec>();
+            .map(|a| *a)
+            .collect::<Vec<(i32, i32)>>();
 
         let mine_positions_iter = raw_mine_positions
             .iter()
             .filter(|(x, y)| {
-                match grid[y as usize][x as usize] {
+                match grid[*y as usize][*x as usize] {
                     Tile::Grass(_) => true,
                     _ => false
                 }
@@ -792,6 +1003,7 @@ impl Grid {
             initial_grid: grid.clone(),
             grid: grid.clone(),
             shack_position,
+            enemy_shack_position,
             drop_positions: drop_positions.clone(),
             mine_position,
             mine_dist,
@@ -813,10 +1025,10 @@ impl Grid {
         }
     }
 
-    fn get_shack_area_iter(&self, area: i32) -> Iterator<Item = (i32, i32)> {
-        (i32::max(0, self.shack_position.0 - area)..(i32::min(self.width as i32, self.shack_position.0 + area + 1)))
-        .cartesian_product((i32::max(0, self.shack_position.1 - area)..(i32::min(self.height as i32, self.shack_position.1 + area + 1))))
-        .filter(|&pos| manhattan_dist(pos, self.shack_position) <= area)
+    fn get_shack_area_iter(&self, area: i32) -> impl Iterator<Item = (i32, i32)> {
+        (i32::max(0, self.shack_position.0 - area)..i32::min(self.width as i32, self.shack_position.0 + area + 1))
+        .cartesian_product(i32::max(0, self.shack_position.1 - area)..i32::min(self.height as i32, self.shack_position.1 + area + 1))
+        .filter(move |pos| manhattan_dist(*pos, self.shack_position) <= area)
     }
 
     fn tree_census(&self, area: i32) -> [i32; 4] {
@@ -844,11 +1056,12 @@ impl Grid {
 
     fn plant_need(&self, area: i32, required: [i32; 4]) -> Option<usize> {
         let census = self.tree_census(area);
+        eprintln!("Tree census: {:?}", census);
         match census
         .iter()
         .zip(required)
         .enumerate()
-        .map(|(fruit, (&r, c))| (fruit, r - c))
+        .map(|(fruit, (c, r))| (fruit, r - *c))
         .filter(|&(_, n)| n > 0)
         .max() {
             None => None,
@@ -860,23 +1073,34 @@ impl Grid {
         match self.plant_need(area, required) {
             None => {},
             Some(fruit) => {
-                trolls
-                .iter()
-                .filter(|&troll| troll.class == TrollType::Peasant || (troll.class == TrollType::Poly && !troll.assigned))
-                .max_by(|&a, &b| {
-                    a.items[fruit].cmp(&b.items[fruit])
-                })
-                .unwrap()
-                .target(fruit + 7)
+                match trolls
+                    .iter_mut()
+                    .filter(|troll| troll.class == TrollType::Peasant || (troll.class == TrollType::Poly && !troll.assigned))
+                    .max_by(|a, b| {
+                        a.items[fruit].cmp(&b.items[fruit])
+                    }) {
+                        None => {},
+                        Some(troll) => troll.target(fruit + 7)
+                    }
             }
         }
     }
 
     fn nearest_empty_place_to_plant(&self, area: i32) -> Option<(i32, i32)> {
         self.get_shack_area_iter(area)
-        .filter(|&(x, y)| &self.grid[y as usize][x as usize].can_be_planted())
-        .min_by(|(a, b)| manhattan_dist(a, self.shack_position).cmp(&manhattan_dist(b, self.shack_position)))
+        .filter(|&(x, y)| self.grid[y as usize][x as usize].can_be_planted())
+        .filter(|&(x, y)| self.grid[y as usize][x as usize].can_walk_through())
+        .min_by(|a, b| manhattan_dist(*a, self.shack_position).cmp(&manhattan_dist(*b, self.shack_position)))
     }
+
+    fn tree_to_grief(&self, trees: &Vec<Tree>) -> Option<(i32, i32)> {
+        trees
+        .iter()
+        .filter(|tree| self.grid[tree.y as usize][tree.x as usize].can_walk_through())
+        .map(|tree| (tree.x, tree.y))
+        .min_by(|a, b| manhattan_dist(*a, self.enemy_shack_position).cmp(&manhattan_dist(*b, self.enemy_shack_position)))
+    }
+
 }
 
 fn parse_loop() -> (
@@ -906,21 +1130,32 @@ fn parse_loop() -> (
             }
             (t, e_t)
         });
+    trolls.sort_by(|a, b| a.id.cmp(&b.id));
+    enemy_trolls.sort_by(|a, b| a.id.cmp(&b.id));
     (inventory, e_inventory, trolls, enemy_trolls, trees)
 }
 
-fn what_to_train(ratio: [i32; 5], got: [i32; 5]) -> Option<TrollType> {
-    let ratio_sum = ratio.iter().sum() as f32;
-    let got_sum = ratio.iter().sum() as f32;
+fn what_to_train(ratio: [i32; 5], trolls: &Vec::<Troll>) -> Option<TrollType> {
+    let got = trolls
+    .iter()
+    .fold([0, 0, 0, 0, 0], |mut acc, troll| {
+        acc[troll.class.to_usize()] += 1;
+        acc
+    });
 
-    if got_sum == 0 {
+    let ratio_sum = ratio.iter().sum::<i32>() as f32;
+    let got_sum = got.iter().sum::<i32>() as f32;
+
+    eprintln!("got {:?}, sum: {got_sum}", got);
+
+    if got_sum == 0.0 {
         return Some(TrollType::Poly)
     }
 
     match got.iter().zip(ratio).enumerate()
-    .filter(|(troll_type, (&r, g))| r > 0)
-    .map(|(troll_type, (&r, g))| {
-        (troll_type, (g as f32 * ratio_sum) / (r as f32 * got_sum))
+    .filter(|(_, (_, r))| *r > 0)
+    .map(|(troll_type, (g, r))| {
+        (troll_type, (*g as f32 * ratio_sum) / (r as f32 * got_sum))
     })
     .min_by(|a, b| {
         match a.1.lt(&b.1) {
@@ -941,10 +1176,11 @@ fn what_to_train(ratio: [i32; 5], got: [i32; 5]) -> Option<TrollType> {
 fn main() {
     let mut grid = Grid::new();
     let mut game_state = START;
-    let thresholds = [2, 4, 8, 16];
-
+    let thresholds = [2, 5, 8];
+    let mut round = 0;
     // game loop
     loop {
+        round += 1;
         let mut actions = vec![];
 
         let (
@@ -952,43 +1188,68 @@ fn main() {
         ) = parse_loop();
         grid.update_tiles(&trolls, &enemy_trolls, &trees);
 
-        if game_state != FARM && trolls.len() >= thresholds[game_state as usize] {
+        if game_state < END && trolls.len() >= thresholds[game_state as usize] {
             game_state += 1;
+        }
+
+        if round > 250 {
+            game_state = CUT_ALL
         }
 
         // TROLL TRAINING MANAGEMENT
 
         let troll_ratio = match game_state {
-            START => [1, 0, 1, 0, 0],
-            EARLY => [1, 2, 1, 0, 0],
-            MID => [1, 2, 1, 0, 0],
-            END => [1, 3, 1, 0, 0],
-            FARM => [0, 0, 0, 0, 0],
+            START => [2, 0, 0, 0, 0],
+            EARLY => [2, 2, 1, 0, 0],
+            MID => [2, 2, 1, 1, 2],
+            END => [0, 0, 0, 0, 0],
+            CUT_ALL => [0, 0, 0, 0, 0],
             _ => unreachable!("unknown game_state {game_state}")
         };
 
-        let troll_wanted: TrollType = what_to_train(troll_ratio, &trolls);
+        eprintln!("troll ratio: {:?}", troll_ratio);
+
+        if game_state > END {
+            trolls
+            .iter_mut()
+            .filter(|troll| troll.class == TrollType::Miner)
+            .for_each(|troll| troll.class = TrollType::Choper);
+        }
+
+        trolls
+        .iter_mut()
+        .filter(|troll| troll.class == TrollType::Choper)
+        .for_each(|troll| troll.target(match game_state {
+            START | EARLY | MID | END => CHOP_BANANA,
+            _ => ANY
+        }));
+
+        let troll_wanted = what_to_train(troll_ratio, &trolls);
 
         match troll_wanted {
             None => {},
             Some(troll) => {
+                eprintln!("{troll}");
                 match inventory.train_asked(
                     troll.charac_need(game_state, grid.mine_dist),
                     troll.cost(game_state, grid.mine_dist, trolls.len() as i32),
                     &mut trolls) {
                     None => {},
-                    Some(a) => actions.push(a)
+                    Some(a) => {
+                        eprintln!("{a}");
+                        actions.push(a)
+                    }
                 }
             }
-        }
+        };
 
         // TREE PLANT MANAGEMENT
 
-        grid.ask_for_plant(3, [3, 3, 3, 0], &mut trolls);
+        grid.ask_for_plant(3, [2, 2, 2, 1], &mut trolls);
 
         // TROLLS ACTIONS
 
-        for troll in trolls {
+        for mut troll in trolls {
             match troll.act(&grid, &trees, &inventory) {
                 Some(a) => actions.push(a),
                 _ => {}
