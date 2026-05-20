@@ -1080,10 +1080,38 @@ impl Grid {
                         a.items[fruit].cmp(&b.items[fruit])
                     }) {
                         None => {},
-                        Some(troll) => troll.target(fruit + 7)
+                        Some(troll) => {
+                            troll.target(fruit + 7)   
+                        }
                     }
             }
         }
+    }
+
+    fn plants_need(&self, area: i32, required: [i32; 4]) -> [i32; 4] {
+        self.tree_census(area)
+        .iter()
+        .zip(required)
+        .enumerate()
+        .fold([0, 0, 0, 0], |mut acc, (idx, (c, r))| {
+            acc[idx] = i32::max(0, *r - c)
+        })
+    }
+
+    fn assign_plants(&self, area: i32, required: [i32; 4], trolls: &mut Vec<Troll>) -> bool {
+        let needs = self.plants_need(area, required);
+        if needs.iter().all(|n| *n == 0) {
+            return false;
+        }
+        required
+        .iter()
+        .enumerate()
+        .for_each(|(fruit_idx, nb_to_plant)| {
+            let this_fruit_carried = trolls
+            .iter()
+            .filter(|troll| troll.have_fruit(Fruit::from_usize(fruit_idx)))
+            .sum::<i32>()
+        });
     }
 
     fn nearest_empty_place_to_plant(&self, area: i32) -> Option<(i32, i32)> {
@@ -1173,10 +1201,73 @@ fn what_to_train(ratio: [i32; 5], trolls: &Vec::<Troll>) -> Option<TrollType> {
     }
 }
 
+#[derive(Copy, Clone, PartialEq, Eq)]
+enum GameState {
+    Start(bool, bool),
+    Early(bool, bool),
+    Mid(bool, bool),
+    End,
+    CutAll
+}
+
+// Beware, here self != self.into().from()
+
+impl Into<i32> for GameState {
+    fn into(self) -> i32 {
+        match self {
+            Start(_) => 0,
+            Early(_) => 1,
+            Mid(_) => 2,
+            End => 3,
+            CutAll => 4
+        }
+    }
+}
+
+impl From<i32> for GameState {
+    fn from(n: i32) -> GameState {
+        match n {
+            0 => GameState::Start(false, false),
+            1 => GameState::Early(false, false),
+            2 => GameState::Mid(false, false),
+            3 => End,
+            4 => CutAll,
+            _ => unreachable!("unknown GameState index: {n}")
+        }
+    }
+}
+
+impl GameState {
+
+    fn upgrade(&mut self) {
+        self = (self.from::<i32>() + 1).into()
+    }
+
+    fn update(&mut self) {
+        match self {
+            GameState::Start(trained, trees_planted) => {
+                if trained && trees_planted {
+                    self.upgrade();
+                }
+            },
+            GameState::Early(trained_1, trained_2) => {
+                if trained_1 && trained_2 {
+                    self.upgrade();
+                }
+            },
+            GameState::Mid(trained_1, trained_2) => {
+                if trained_1 && trained_2 {
+                    self.upgrade();
+                }
+            },
+            _ => {}
+        }
+    }
+}
+
 fn main() {
     let mut grid = Grid::new();
-    let mut game_state = START;
-    let thresholds = [2, 5, 8];
+    let mut game_state: GameState = 0.into();
     let mut round = 0;
     // game loop
     loop {
@@ -1188,12 +1279,28 @@ fn main() {
         ) = parse_loop();
         grid.update_tiles(&trolls, &enemy_trolls, &trees);
 
-        if game_state < END && trolls.len() >= thresholds[game_state as usize] {
-            game_state += 1;
-        }
+        game_state.update();
 
-        if round > 250 {
-            game_state = CUT_ALL
+        match game_state {
+            GameState::Start(peasant_trained, trees_to_plant) => {
+                if !peasant_trained {
+                    peasant_trained = false;
+                    actions.push(format!("TRAIN {} {} {} {}", 1, 1, 1, 0));
+                }
+                grid.ask_for_plant(3, [2, 2, 2, 1], &mut trolls);
+            },
+            GameState::Early(peasant_trained, miner_trained) => {
+
+            },
+            GameState::Mid(griefer_trained, choper_trained) => {
+
+            },
+            GamesState::End => {
+
+            },
+            GameState::CutAll => {
+
+            }
         }
 
         // TROLL TRAINING MANAGEMENT
