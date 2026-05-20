@@ -1,8 +1,5 @@
 ## Ideas ##
 
-- first do a Miner
-- create annoying trolls to cut enemy trees (if possible cut all trees if enemy has less ressources than me)
-
-## TODOS ##
-
-- finish to implem missing methods and test
+- Do not train Griefer is ennemy base is too near
+- Do not grief a tree which is closer to by base than the ennemy base
+- Plant more bananas at endgame (near water ?)
