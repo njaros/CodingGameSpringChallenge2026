@@ -5,3 +5,9 @@
 - Plant more bananas at endgame (near water ?)
 - 2 move speed for all new trolls
 - only one peasant ?
+
+## Todos ##
+
+- mine_position must be choosen according to the tile availability
+- best tree to harvest must be choosen according to the tile availability
+- debug the near_strategy
