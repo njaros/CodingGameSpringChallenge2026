@@ -162,7 +162,7 @@ enum TrollType {
     // Troll having all charac > 0 (like the first one)
     Poly,
     // Troll having no carryCapacity but chopPower and movementSpeed to destroy enemy trees
-    EnemyChoper,
+    Griefer,
     // Troll having chopPower and carryCapacity
     Choper,
     // Troll having harvestPower and carryCapacity
@@ -187,7 +187,7 @@ impl TrollType {
 
             return TrollType::Peasant
         }
-        return TrollType::EnemyChoper
+        return TrollType::Griefer
     }
 
     fn charac_need(&self, game_state: i32, mine_dist: i32) -> [i32; 4] {
@@ -195,21 +195,16 @@ impl TrollType {
             TrollType::Poly => [1 + game_state / 2, 1 + game_state / 2, 1 + game_state / 2, 1 + game_state / 2],
             TrollType::Choper => [2, 4, 0, 3],
             TrollType::Miner => [
-                    1 + i32::min(1 + game_state, mine_dist / 4),
+                    2,
                     i32::max(2, mine_dist / 4),
                     0,
-                    match game_state {
-                        START => 1,
-                        _ => {
-                            i32::min(
-                                i32::max(2, mine_dist / 4),
-                                1 + i32::max(0, 5 - mine_dist / 4)
-                            )
-                        }
-                    }
+                    i32::min(
+                        i32::max(2, mine_dist / 4),
+                        1 + i32::max(0, 5 - mine_dist / 4)
+                    )
                 ],
-            TrollType::EnemyChoper => [2, 0, 0, 2],
-            TrollType::Peasant => [1, i32::min(2, game_state), i32::min(2, game_state), 0]
+            TrollType::Griefer => [2, 0, 0, 2],
+            TrollType::Peasant => [2, 2, 2, 0]
         }
     }
 
@@ -231,7 +226,7 @@ impl TrollType {
             1 => TrollType::Peasant,
             2 => TrollType::Miner,
             3 => TrollType::Choper,
-            4 => TrollType::EnemyChoper,
+            4 => TrollType::Griefer,
             _ => unreachable!("unknown troll type {n}")
         }
     }
@@ -242,7 +237,7 @@ impl TrollType {
             TrollType::Peasant => 1, 
             TrollType::Miner => 2,
             TrollType::Choper => 3,
-            TrollType::EnemyChoper => 4
+            TrollType::Griefer => 4
         }
     }
 }
@@ -251,7 +246,7 @@ impl fmt::Display for TrollType {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
         write!(f, "{}", match self {
             TrollType::Choper => "CHOPER",
-            TrollType::EnemyChoper => "ENEMY_CHOPER",
+            TrollType::Griefer => "GRIEFER",
             TrollType::Miner => "MINER",
             TrollType::Peasant => "PEASANT",
             TrollType::Poly => "POLY"
@@ -336,8 +331,8 @@ impl Troll {
         self.charac[CAPA] - self.total_carry()
     }
 
-    fn have_fruit(&self, fruit: Fruit) -> bool {
-        self.items[fruit.to_usize()] != 0
+    fn have_fruit(&self, fruit: Fruit) -> i32 {
+        self.items[fruit.to_usize()]
     }
 
     fn have(&self, item: usize) -> bool {
@@ -475,10 +470,7 @@ impl Troll {
     fn find_shorter_tree<'a>(&self, trees: &'a Vec::<Tree>) -> Option<(i32, &'a Tree)> {
         trees.iter()
         .filter(|tree| {
-            match tree.fruit {
-                Fruit::Banana => false,
-                _ => tree.nb_fruit > 0
-            }
+            tree.nb_fruit > 0
         })
         .map(|tree| {
             (i32::abs(self.x - tree.x) + i32::abs(self.y - tree.y), tree)
@@ -556,14 +548,14 @@ impl Troll {
 
     fn plant(&self) -> String {
         match self.have_fruit(Fruit::from_usize(self.objective)) {
-            true => format!("PLANT {} {}", self.id, Fruit::from_usize(self.objective)),
-            false => format!("PLANT {} {}", self.id, Fruit::from_usize(self.items
-                                                        .iter()
+            0 => format!("PLANT {} {}", self.id, Fruit::from_usize(self.items
+            .iter()
                                                         .enumerate()
                                                         .find(|(_, n)| **n > 0)
                                                         .map(|(idx, _)| idx)
                                                         .unwrap())
-            )
+            ),
+            _ => format!("PLANT {} {}", self.id, Fruit::from_usize(self.objective))
         }
 
     }
@@ -659,12 +651,14 @@ impl Troll {
                 }
             },
             false => {
-                if self.can_plant(grid) {
-                    return Some(self.plant())
-                }
-                match grid.nearest_empty_place_to_plant(3) {
-                    None => {},
-                    Some((x, y)) => return Some(self.go_to(x, y))
+                if self.have_fruit(Fruit::from_usize(self.objective)) > 0 {
+                    if self.can_plant(grid) {
+                        return Some(self.plant())
+                    }
+                    match grid.nearest_empty_place_to_plant(3) {
+                        None => {},
+                        Some((x, y)) => return Some(self.go_to(x, y))
+                    }
                 }
             }
         }
@@ -690,7 +684,7 @@ impl Troll {
         return Some(self.go_to(grid.mine_position.0, grid.mine_position.1))
     }
 
-    fn act_as_enemy_choper(&self, grid: &Grid, trees: &Vec::<Tree>) -> Option<String> {
+    fn act_as_griefer(&self, grid: &Grid, trees: &Vec::<Tree>) -> Option<String> {
         if self.can_grief(grid, trees) {
             return Some(self.chop())
         }
@@ -709,7 +703,7 @@ impl Troll {
         match self.class {
             TrollType::Poly => self.act_as_poly(grid, trees, inventory),
             TrollType::Choper => self.act_as_choper(grid, trees),
-            TrollType::EnemyChoper => self.act_as_enemy_choper(grid, trees),
+            TrollType::Griefer => self.act_as_griefer(grid, trees),
             TrollType::Miner => self.act_as_miner(grid, trees),
             TrollType::Peasant => self.act_as_peasant(grid, trees, inventory)
         }
@@ -1099,13 +1093,14 @@ impl Grid {
         if needs > 0 {
             trolls
             .iter_mut()
-            .filter(|troll| troll.have_fruit(Fruit::Banana))
+            .filter(|troll| troll.have_fruit(Fruit::Banana) > 0)
             .for_each(|troll| troll.target(PLANT_BANANA));
 
             let bananas_carried: i32 = trolls
             .iter()
-            .filter(|troll| troll.have_fruit(Fruit::Banana))
-            .count() as i32;
+            .filter(|troll| troll.have_fruit(Fruit::Banana) > 0)
+            .map(|troll| troll.have_fruit(Fruit::Banana))
+            .sum();
             let bananas_to_plant = needs - bananas_carried;
             
             let mut trolls_available_iter = trolls
@@ -1138,19 +1133,23 @@ impl Grid {
         if needs.iter().all(|n| *n == 0) {
             return false;
         }
-        trolls
-        .iter_mut()
-        .filter(|troll| troll.have_any_fruit())
-        .for_each(|troll| troll.target(PLANT_ANY));
+        // trolls
+        // .iter_mut()
+        // .filter(|troll| troll.have_any_fruit())
+        // .for_each(|troll| troll.target(PLANT_ANY));
 
         needs
         .iter()
         .enumerate()
         .for_each(|(fruit_idx, nb_to_plant)| {
             let this_fruit_carried: i32 = trolls
-            .iter()
-            .filter(|troll| troll.have_fruit(Fruit::from_usize(fruit_idx)))
-            .count() as i32;
+            .iter_mut()
+            .filter(|troll| troll.have_fruit(Fruit::from_usize(fruit_idx)) > 0)
+            .map(|troll| {
+                troll.target(fruit_idx + 7);
+                troll.have_fruit(Fruit::from_usize(fruit_idx))
+            })
+            .sum();
 
             let mut trolls_available_iter = trolls
             .iter_mut()
@@ -1183,6 +1182,7 @@ impl Grid {
         trees
         .iter()
         .filter(|tree| self.grid[tree.y as usize][tree.x as usize].can_walk_through())
+        .filter(|tree| manhattan_dist((tree.x, tree.y), self.shack_position) > 3)
         .map(|tree| (tree.x, tree.y))
         .min_by(|a, b| manhattan_dist(*a, self.enemy_shack_position).cmp(&manhattan_dist(*b, self.enemy_shack_position)))
     }
@@ -1270,7 +1270,7 @@ fn what_to_train(ratio: [i32; 5], trolls: &Vec::<Troll>) -> Option<TrollType> {
 enum GameState {
     Start(bool, bool),
     Early(bool, bool),
-    Mid(bool, bool),
+    Mid(bool),
     End,
     CutAll
 }
@@ -1294,7 +1294,7 @@ impl From<i32> for GameState {
         match n {
             0 => GameState::Start(false, false),
             1 => GameState::Early(false, false),
-            2 => GameState::Mid(false, false),
+            2 => GameState::Mid(false),
             3 => GameState::End,
             4 => GameState::CutAll,
             _ => unreachable!("unknown GameState index: {n}")
@@ -1320,8 +1320,8 @@ impl GameState {
                     self.upgrade();
                 }
             },
-            GameState::Mid(trained_1, trained_2) => {
-                if *trained_1 && *trained_2 {
+            GameState::Mid(trained) => {
+                if *trained {
                     self.upgrade();
                 }
             },
@@ -1351,27 +1351,45 @@ fn main() {
             game_state = GameState::CutAll;
         }
 
-        match game_state {
-            GameState::Start(ref mut peasant_trained, ref mut trees_to_plant) => {
+        let game_state_i32: i32 = game_state.into();
+
+        match &mut game_state {
+            GameState::Start(peasant_trained, trees_to_plant) => {
                 if !*peasant_trained {
-                    *peasant_trained = true;
-                    actions.push(format!("TRAIN {} {} {} {}", 1, 1, 1, 0));
+                    let to_train = TrollType::Peasant;
+                    match inventory.train_asked(
+                        to_train.charac_need(
+                            game_state_i32,
+                            grid.mine_dist),
+                        to_train.cost(
+                            game_state_i32,
+                            grid.mine_dist,
+                            trolls.len() as i32
+                        ),
+                        &mut trolls
+                    ) {
+                        Some(cmd) => {
+                            actions.push(cmd);
+                            *peasant_trained = true;
+                        },
+                        None => {}
+                    };
                 }
-                if !grid.assign_plants(3, [2, 2, 2, 1], &mut trolls) {
+                else if !grid.assign_plants(3, [2, 2, 2, 1], &mut trolls) {
                     *trees_to_plant = true;
                 };
             },
-            GameState::Early(ref mut peasant_trained, ref mut miner_trained) => {
-                let to_train = match *peasant_trained {
-                    false => TrollType::Peasant,
-                    _ => TrollType::Miner
+            GameState::Early(miner_trained, griefer_trained) => {
+                let to_train = match *miner_trained {
+                    false => TrollType::Miner,
+                    _ => TrollType::Griefer
                 };
                 match inventory.train_asked(
                     to_train.charac_need(
-                        1,
+                        game_state_i32,
                         grid.mine_dist),
                     to_train.cost(
-                        1,
+                        game_state_i32,
                         grid.mine_dist,
                         trolls.len() as i32
                     ),
@@ -1379,25 +1397,23 @@ fn main() {
                 ) {
                     Some(cmd) => {
                         actions.push(cmd);
-                        *peasant_trained = true;
-                        if to_train == TrollType::Miner {
-                            *miner_trained = true;
+                        *miner_trained = true;
+                        if to_train == TrollType::Griefer {
+                            *griefer_trained = true;
                         }
                     },
                     None => {}
-                }
+                };
+                grid.assign_plants(3, [2, 2, 2, 1], &mut trolls);
             },
-            GameState::Mid(ref mut griefer_trained, ref mut choper_trained) => {
-                let to_train = match *griefer_trained {
-                    false => TrollType::EnemyChoper,
-                    _ => TrollType::Choper
-                };
+            GameState::Mid(choper_trained) => {
+                let to_train = TrollType::Choper;
                 match inventory.train_asked(
                     to_train.charac_need(
-                        2,
+                        game_state_i32,
                         grid.mine_dist),
                     to_train.cost(
-                        2,
+                        game_state_i32,
                         grid.mine_dist,
                         trolls.len() as i32
                     ),
@@ -1405,16 +1421,15 @@ fn main() {
                 ) {
                     Some(cmd) => {
                         actions.push(cmd);
-                        *griefer_trained = true;
-                        if to_train == TrollType::Choper {
-                            *choper_trained = true;
-                        }
+                        *choper_trained = true;
                     },
                     None => {}
                 };
+                grid.assign_plants(3, [2, 2, 2, 1], &mut trolls);
             },
             GameState::End => {
-                grid.assign_plant_bananas(3, 2, &mut trolls);
+                grid.assign_plant_bananas(3, 3, &mut trolls);
+                grid.assign_plants(3, [2, 2, 2, 0], &mut trolls);
                 trolls
                 .iter_mut()
                 .filter(|troll| troll.class == TrollType::Choper)
@@ -1426,7 +1441,7 @@ fn main() {
                 .filter(|troll| troll.class == TrollType::Miner)
                 .for_each(|troll| troll.class = TrollType::Choper);
             }
-        }
+        };
 
         // TROLLS ACTIONS
 
