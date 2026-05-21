@@ -670,7 +670,7 @@ impl Troll {
 
     fn act_as_miner(&self, grid: &Grid, trees: &Vec::<Tree>) -> Option<String> {
         if self.objective == WOOD {
-            return self.act_as_choper(grid, trees)
+            return self.act_as_collector(grid, trees)
         }
         if self.can_drop(&grid.drop_positions) {
             return Some(self.drop())
@@ -1408,15 +1408,23 @@ fn main() {
             },
             GameState::Mid(choper_trained) => {
                 let to_train = TrollType::Choper;
+                let cost = to_train.cost(
+                    game_state_i32,
+                    grid.mine_dist,
+                    trolls.len() as i32
+                );
+                let irons_need = cost[IRON];
+                if inventory.resources[IRON] >= irons_need {
+                    trolls
+                    .iter_mut()
+                    .filter(|troll| troll.class == TrollType::Miner)
+                    .for_each(|troll| troll.target(WOOD));
+                }
                 match inventory.train_asked(
                     to_train.charac_need(
                         game_state_i32,
                         grid.mine_dist),
-                    to_train.cost(
-                        game_state_i32,
-                        grid.mine_dist,
-                        trolls.len() as i32
-                    ),
+                    cost,
                     &mut trolls
                 ) {
                     Some(cmd) => {
@@ -1425,7 +1433,8 @@ fn main() {
                     },
                     None => {}
                 };
-                grid.assign_plants(3, [2, 2, 2, 1], &mut trolls);
+                grid.assign_plant_bananas(3, 3, &mut trolls);
+                grid.assign_plants(3, [2, 2, 2, 0], &mut trolls);
             },
             GameState::End => {
                 grid.assign_plant_bananas(3, 3, &mut trolls);
