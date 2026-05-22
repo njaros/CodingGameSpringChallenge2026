@@ -1,6 +1,6 @@
 extern crate itertools;
 
-use std::{fmt, io, cmp::{Ordering}};
+use std::{fmt, io, cmp::{Ordering, Reverse}, collections::{BinaryHeap, HashSet}, hash::{Hash, Hasher}};
 use itertools::Itertools;
 
 macro_rules! parse_input {
@@ -54,6 +54,132 @@ fn safe_push_positions(positions: &Vec<(i32, i32)>, to_vec: &mut Vec<(i32, i32)>
     .iter()
     .filter(|(x, y)| *x >= 0 && *y >= 0 && *x < max_w && *y < max_h)
     .for_each(|pos| to_vec.push(*pos))
+}
+
+fn a_star(grid: &Grid, from: (i32, i32), to: (i32, i32), speed: i32, troll_paths: &Vec<Vec<(i32, i32)>>) -> Option<Vec<(i32, i32)>> {
+    
+    #[derive(Copy, Clone, PartialEq, Eq)]
+    struct Node<'a> {
+        pos: (i32, i32),
+        cost: i32,
+        value: i32,
+        parent: Option<&'a Node<'a>>
+    }
+
+    impl PartialEq for Node<'_> {
+        fn eq(&self, other: &Self) -> bool {
+            self.pos == other.pos
+        }
+    }
+
+    impl Eq for Node<'_> {}
+
+    impl PartialOrd for Node<'_> {
+        fn partial_cmp(&self, other: &Self) -> Option<Ordering> {
+            Some(self.cmp(other))
+        }
+    }
+
+    impl Ord for Node<'_> {
+        fn cmp(&self, other: &Self) -> Ordering {
+            self.value.cmp(&other.value)
+        }
+    }
+
+    impl Hash for Node<'_> {
+        fn hash<H: Hasher>(&self, state: &mut H) {
+            self.pos.hash(state);
+        }
+    }
+
+    impl Node<'_> {
+        fn new(pos: (i32, i32), to: (i32, i32)) -> Node<'static> {
+            Node {
+                pos,
+                cost: 0,
+                value: manhattan_dist(pos, to),
+                parent: None
+            }
+        }
+
+        fn from<'a>(parent: &'a Node<'a>, pos: (i32, i32), to: (i32, i32)) -> Node<'a> {
+            let cost = parent.cost + 1;
+            Node {
+                pos,
+                cost: cost,
+                value: cost + manhattan_dist(pos, to),
+                parent: Some(parent)
+            }
+        }
+
+        fn collect(&self) -> Vec<(i32, i32)> {
+            match self.parent {
+                None => vec![],
+                Some(node) => vec![self.pos].extend(node.collect())
+            }
+        }
+    }
+
+    fn get_neigh(pos: (i32, i32), speed: i32, grid: &Grid, visited: &mut HashSet<(i32, i32)>, current_cost: i32, troll_paths: &Vec<Vec<(i32, i32)>>) -> Vec<(i32, i32)> {
+        match speed {
+            0 => vec![],
+            n => {
+                [(-1, 0), (1, 0), (0, -1), (0, 1)]
+                .iter()
+                .fold(Vec::<(i32, i32)>::new(), |mut acc, (x, y)| {
+                    let new_pos = (pos.0 + x, pos.1 + y);
+                    let positions = troll_paths.get(current_cost as usize);
+                    if
+                        positions.is_none_or(|pos| !pos.contains(&new_pos)) &&
+                        new_pos.0 >= 0 && new_pos.1 >= 0 &&
+                        new_pos.0 < grid.width && new_pos.1 < grid.height &&
+                        grid.grid[new_pos.1 as usize][new_pos.0 as usize].can_walk_through()
+                    {
+                        match visited.insert(new_pos) {
+                            true => acc.extend(get_neigh(new_pos, speed - 1, grid, visited, current_cost, troll_paths)),
+                            false => {}
+                        }
+                    }
+                    acc
+                })
+            }
+        }
+    }
+
+    fn check_in_close(node_to_check: &Node, close: &mut HashSet<Node>, open: &mut BinaryHeap::<Node>) {
+        match close.get(node_to_check) {
+            None => open.insert(node_to_check),
+            Some(found) => {
+                if found.value > node_to_check.value {
+                    open.insert(node_to_check);
+                    close.remove(&found);
+                }
+            }
+        }
+    }
+
+    let mut close: HashSet<Node> = vec![];
+    let mut open = BinaryHeap::<Node>::new();
+    let mut goal_reached = false;
+    let mut path = None;
+    open.push(current);
+
+    while let Some(current) = open.pop() {
+        if current.pos == to {
+            path = Some(current);
+            goal_reached = true;
+            break;
+        }
+        get_neigh(current.pos, speed, grid, &mut HashSet::<(i32, i32)>::new(), current.cost, troll_paths)
+        .iter()
+        .for_each(|&pos| check_in_close(&Node::from(&current, pos, to), &mut close, &mut open));
+        close.insert(current);
+    }
+
+    match path {
+        None => None,
+        Some(node) => Some(node.collect())
+    }
 }
 
 // TREE PART
@@ -985,7 +1111,7 @@ struct Grid {
     pub shack_position: (i32, i32),
     pub enemy_shack_position: (i32, i32),
     pub drop_positions: Vec::<(i32, i32)>,
-    pub mine_position: (i32, i32),
+    pub mine_positions: Vec::<(i32, i32)>,
     pub mine_dist: i32,
     pub width: i32,
     pub height: i32

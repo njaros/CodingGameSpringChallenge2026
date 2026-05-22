@@ -1,0 +1,7 @@
+[package]
+name = "CodingGameSpringChallenge2026"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+priority-queue = {version="2.7.0"}
