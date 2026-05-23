@@ -56,71 +56,79 @@ fn safe_push_positions(positions: &Vec<(i32, i32)>, to_vec: &mut Vec<(i32, i32)>
     .for_each(|pos| to_vec.push(*pos))
 }
 
-fn a_star(grid: &Grid, from: (i32, i32), to: (i32, i32), speed: i32, troll_paths: &Vec<Vec<(i32, i32)>>) -> Option<Vec<(i32, i32)>> {
+fn a_star(grid: &Grid, from: (i32, i32), to: (i32, i32), speed: i32, troll_paths: &mut Vec<Vec<(i32, i32)>>, ignore_collide: bool) -> Option<Vec<(i32, i32)>> {
     
-    #[derive(Copy, Clone, PartialEq, Eq)]
-    struct Node<'a> {
+    #[derive(Copy, Clone)]
+    struct Node {
         pos: (i32, i32),
         cost: i32,
         value: i32,
-        parent: Option<&'a Node<'a>>
+        index: usize,
+        parent: Option<usize>
     }
 
-    impl PartialEq for Node<'_> {
+    impl PartialEq for Node {
         fn eq(&self, other: &Self) -> bool {
             self.pos == other.pos
         }
     }
 
-    impl Eq for Node<'_> {}
+    impl Eq for Node {}
 
-    impl PartialOrd for Node<'_> {
+    impl PartialOrd for Node {
         fn partial_cmp(&self, other: &Self) -> Option<Ordering> {
             Some(self.cmp(other))
         }
     }
 
-    impl Ord for Node<'_> {
+    impl Ord for Node {
         fn cmp(&self, other: &Self) -> Ordering {
             self.value.cmp(&other.value)
         }
     }
 
-    impl Hash for Node<'_> {
+    impl Hash for Node {
         fn hash<H: Hasher>(&self, state: &mut H) {
             self.pos.hash(state);
         }
     }
 
-    impl Node<'_> {
-        fn new(pos: (i32, i32), to: (i32, i32)) -> Node<'static> {
+    impl Node {
+        fn new(pos: (i32, i32), to: (i32, i32), index: usize) -> Node {
             Node {
                 pos,
                 cost: 0,
                 value: manhattan_dist(pos, to),
+                index,
                 parent: None
             }
         }
 
-        fn from<'a>(parent: &'a Node<'a>, pos: (i32, i32), to: (i32, i32)) -> Node<'a> {
-            let cost = parent.cost + 1;
+        fn from(parent_idx: usize, parent_cost: i32, pos: (i32, i32), to: (i32, i32), index: usize) -> Node {
+            let cost = parent_cost + 1;
             Node {
                 pos,
                 cost: cost,
                 value: cost + manhattan_dist(pos, to),
-                parent: Some(parent)
+                index,
+                parent: Some(parent_idx)
             }
         }
 
-        fn collect(&self) -> Vec<(i32, i32)> {
+        fn collect(&self, ram_of_nodes: &Vec<Node>) -> Vec<(i32, i32)> {
             match self.parent {
                 None => vec![],
-                Some(node) => vec![self.pos].extend(node.collect())
+                Some(idx) => {
+                    let node = ram_of_nodes[idx];
+                    let mut res = node.collect(ram_of_nodes);
+                    res.extend([self.pos]);
+                    res
+                }
             }
         }
     }
 
-    fn get_neigh(pos: (i32, i32), speed: i32, grid: &Grid, visited: &mut HashSet<(i32, i32)>, current_cost: i32, troll_paths: &Vec<Vec<(i32, i32)>>) -> Vec<(i32, i32)> {
+    fn get_neigh(pos: (i32, i32), speed: i32, grid: &Grid, visited: &mut HashSet<(i32, i32)>, current_cost: i32, troll_paths: &Vec<Vec<(i32, i32)>>, ignore_collide: bool) -> Vec<(i32, i32)> {
         match speed {
             0 => vec![],
             n => {
@@ -128,15 +136,20 @@ fn a_star(grid: &Grid, from: (i32, i32), to: (i32, i32), speed: i32, troll_paths
                 .iter()
                 .fold(Vec::<(i32, i32)>::new(), |mut acc, (x, y)| {
                     let new_pos = (pos.0 + x, pos.1 + y);
-                    let positions = troll_paths.get(current_cost as usize);
+                    let positions = troll_paths.get((current_cost - 1) as usize);
                     if
                         positions.is_none_or(|pos| !pos.contains(&new_pos)) &&
                         new_pos.0 >= 0 && new_pos.1 >= 0 &&
                         new_pos.0 < grid.width && new_pos.1 < grid.height &&
-                        grid.grid[new_pos.1 as usize][new_pos.0 as usize].can_walk_through()
+                        grid.grid[new_pos.1 as usize][new_pos.0 as usize].is_grass()
                     {
                         match visited.insert(new_pos) {
-                            true => acc.extend(get_neigh(new_pos, speed - 1, grid, visited, current_cost, troll_paths)),
+                            true => {
+                                if ignore_collide || grid.grid[new_pos.1 as usize][new_pos.0 as usize].can_walk_through() {
+                                    acc.push(new_pos);
+                                }
+                                acc.extend(get_neigh(new_pos, n - 1, grid, visited, current_cost, troll_paths, ignore_collide))
+                            },
                             false => {}
                         }
                     }
@@ -146,39 +159,55 @@ fn a_star(grid: &Grid, from: (i32, i32), to: (i32, i32), speed: i32, troll_paths
         }
     }
 
-    fn check_in_close(node_to_check: &Node, close: &mut HashSet<Node>, open: &mut BinaryHeap::<Node>) {
-        match close.get(node_to_check) {
-            None => open.insert(node_to_check),
+    fn check_in_close(node_to_check: Node, close: &mut HashSet<Node>, open: &mut BinaryHeap<Reverse<Node>>, ram_of_nodes: &mut Vec<Node>) {
+        match close.get(&node_to_check) {
+            None => {
+                ram_of_nodes.push(node_to_check);
+                open.push(Reverse(node_to_check));
+            }
             Some(found) => {
                 if found.value > node_to_check.value {
-                    open.insert(node_to_check);
-                    close.remove(&found);
+                    ram_of_nodes.push(node_to_check);
+                    open.push(Reverse(node_to_check));
+                    // Need to clone here because RUST
+                    close.remove(&found.clone());
                 }
             }
         }
     }
 
-    let mut close: HashSet<Node> = vec![];
-    let mut open = BinaryHeap::<Node>::new();
-    let mut goal_reached = false;
-    let mut path = None;
-    open.push(current);
+    // Rust ownerships and lifetimes attempt to implement any a* algorithm,
+    // so no choice to create a custom RAM as Vec<Node> to get all the node references when needed.
+    // (Rust fault here)
+    let mut ram_of_nodes = Vec::<Node>::new();
+    let mut close = HashSet::<Node>::new();
+    let mut open = BinaryHeap::<Reverse<Node>>::new();
+    let mut path: Option<Node> = None;
+    ram_of_nodes.push(Node::new(from, to, 0));
+    open.push(Reverse(Node::new(from, to, 0)));
 
-    while let Some(current) = open.pop() {
+    while let Some(Reverse(current)) = open.pop() {
         if current.pos == to {
             path = Some(current);
-            goal_reached = true;
             break;
         }
-        get_neigh(current.pos, speed, grid, &mut HashSet::<(i32, i32)>::new(), current.cost, troll_paths)
-        .iter()
-        .for_each(|&pos| check_in_close(&Node::from(&current, pos, to), &mut close, &mut open));
+        for pos in get_neigh(current.pos, speed, grid, &mut HashSet::<(i32, i32)>::new(), current.cost, troll_paths, ignore_collide) {
+            check_in_close(Node::from(current.index, current.cost, pos, to, ram_of_nodes.len()), &mut close, &mut open, &mut ram_of_nodes);
+        }
         close.insert(current);
     }
 
     match path {
         None => None,
-        Some(node) => Some(node.collect())
+        Some(node) => {
+            let path = node.collect(&ram_of_nodes);
+            let diff_size = path.len() as i32 - troll_paths.len() as i32;
+            if diff_size > 0 {
+                (0..diff_size).into_iter().for_each(|_| troll_paths.push(Vec::<(i32, i32)>::new()));
+            }
+            path.iter().enumerate().for_each(|(idx, &pos)| troll_paths[idx].push(pos));
+            Some(path)
+        }
     }
 }
 
@@ -306,8 +335,8 @@ impl TrollType {
             [1, 1, 1, 1] => TrollType::Poly,
             [2, 4, 0, 3] | [2, 2, 0, 2] => TrollType::Choper,
             [2, 0, 0, 2] => TrollType::Griefer,
-            [2, 2, 2, 1] => TrollType::Peasant,
-            _ => TrollType::Miner
+            [2, 2, 0, 1] => TrollType::Miner,
+            _ => TrollType::Peasant,
         }
     }
 
@@ -321,14 +350,37 @@ impl TrollType {
         }
     }
 
-    fn cost(&self, game_state: i32, mine_dist: i32, total_troll: i32) -> [i32; 6] {
+    fn best_possible_train(inventory: &Inventory, total_trolls: i32) -> [i32; 4] {
+        fn to_higher_square_root(val: i32) -> i32 {
+            match val {
+                0 => 0,
+                1..=3 => 1,
+                4..=8 => 2,
+                9..=15 => 3,
+                16..=24 => 4,
+                25..=35 => 5,
+                36..=48 => 6,
+                49..=63 => 7,
+                64..=80 => 8,
+                81..=99 => 9,
+                _ => unreachable!("faut pas deconner...")
+            }
+        }
+        let speed_max = to_higher_square_root(inventory.resources[PLUM] - total_trolls);
+        let capa_max = to_higher_square_root(inventory.resources[LEMON] - total_trolls);
+        let harvest_max = i32::min(capa_max, to_higher_square_root(inventory.resources[APPLE] - total_trolls));
+        let chop_max = i32::min(capa_max, to_higher_square_root(inventory.resources[IRON] - total_trolls));
+        [speed_max, capa_max, harvest_max, chop_max]
+    }
+
+    fn cost(&self, game_state: i32, mine_dist: i32, total_trolls: i32) -> [i32; 6] {
         let charac = self.charac_need(game_state, mine_dist);
         [
-            total_troll + charac[MS] * charac[MS],
-            total_troll + charac[CAPA] * charac[CAPA],
-            total_troll + charac[HARV] * charac[HARV],
+            total_trolls + charac[MS] * charac[MS],
+            total_trolls + charac[CAPA] * charac[CAPA],
+            total_trolls + charac[HARV] * charac[HARV],
             0,
-            total_troll + charac[CHOP] * charac[CHOP],
+            total_trolls + charac[CHOP] * charac[CHOP],
             0
         ]
     }
@@ -529,8 +581,8 @@ impl Troll {
         drop_positions.contains(&(self.x, self.y)) && self.total_carry() > 0
     }
 
-    fn can_mine(&self, mine_position: (i32, i32)) -> bool {
-        (self.x, self.y) == mine_position
+    fn can_mine(&self, grid: &Grid) -> bool {
+        grid.mine_positions.contains(&(self.x, self.y))
     }
 
     fn can_pick(&self, drop_positions: &Vec::<(i32, i32)>, inventory: &Inventory) -> bool {
@@ -558,7 +610,7 @@ impl Troll {
     }
 
     fn can_grief(&self, grid: &Grid, trees: &Vec<Tree>) -> bool {
-        match grid.tree_to_grief_ignore_walk_through(trees) {
+        match grid.tree_to_grief_whatever_dist(trees) {
             None => false,
             Some((x, y)) => {
                 manhattan_dist((self.x, self.y), grid.enemy_shack_position) == manhattan_dist((x, y), grid.enemy_shack_position)
@@ -569,31 +621,83 @@ impl Troll {
 
     // GOTOS
 
-    fn go_to(&self, x: i32, y: i32) -> String {
+    fn go_to(&self, x: i32, y: i32, grid: &Grid, troll_paths: &mut Vec<Vec<(i32, i32)>>) -> String {
+        eprintln!("id: {} wants to go to {:?}", self.id, (x, y));
+        // let (n_x, n_y) = match a_star(grid, (self.x, self.y), (x, y), self.charac[MS], troll_paths, false) {
+        //     None => {
+        //         eprintln!("no path found with collide");
+        //         match a_star(grid, (self.x, self.y), (x, y), self.charac[MS], troll_paths, true) {
+        //             None => (self.x, self.y),
+        //             Some(v) => match v.len() {
+        //                 0 => (self.x, self.y),
+        //                 l => v[0]
+        //             }
+        //         } 
+        //     },
+        //     Some(v) => match v.len() {
+        //         0 => (self.x, self.y),
+        //         l => v[0]
+        //     }
+        // };
+        // format!("MOVE {} {n_x} {n_y}", self.id)
         format!("MOVE {} {x} {y}", self.id)
     }
 
-    fn go_to_tree(&self, tree: &Tree) -> String {
-        self.go_to(tree.x, tree.y)
+    fn go_to_best_pos(&self, positions: &Vec<(i32, i32)>, grid: &Grid, troll_paths: &mut Vec<Vec<(i32, i32)>>) -> String {
+        // let (mut n_x, mut n_y) = match positions
+        // .iter()
+        // .map(|&to| a_star(grid, (self.x, self.y), to, self.charac[MS], troll_paths, false))
+        // .filter(|mapped| mapped.is_some())
+        // .map(|filtered| filtered.unwrap())
+        // .min_by(|v1, v2| v1.len().cmp(&v2.len())) {
+        //     None => (self.x, self.y),
+        //     Some(v) => match v.len() {
+        //         0 => (self.x, self.y),
+        //         l => v[0]
+        //     }
+        // };
+        // if (n_x, n_y) == (self.x, self.y) {
+        //     (n_x, n_y) = match positions
+        //     .iter()
+        //     .map(|&to| a_star(grid, (self.x, self.y), to, self.charac[MS], troll_paths, true))
+        //     .filter(|mapped| mapped.is_some())
+        //     .map(|filtered| filtered.unwrap())
+        //     .min_by(|v1, v2| v1.len().cmp(&v2.len())) {
+        //         None => (self.x, self.y),
+        //         Some(v) => match v.len() {
+        //             0 => (self.x, self.y),
+        //             l => v[0]
+        //         }
+        //     };
+        // }
+        // format!("MOVE {} {n_x} {n_y}", self.id)
+        let (x, y) = positions
+        .iter()
+        .min_by(|&&a, &&b| manhattan_dist(a, (self.x, self.y)).cmp(&manhattan_dist(b, (self.x, self.y))))
+        .unwrap();
+        format!("MOVE {} {x} {y}", self.id)
     }
 
-    fn go_to_drop(&self, grid: &Grid) -> Option<String> {
-        match grid.drop_positions
-            .iter()
-            .filter(|(x, y)| grid.grid[*y as usize][*x as usize].can_walk_through())
-            .min_by(|&a, &b| {
-                (i32::abs(a.0 - self.x) + i32::abs(a.1 - self.y)).cmp(
-                    &(i32::abs(b.0 - self.x) + i32::abs(b.1 - self.y))
-                )
-            }) {
-            None => None,
-            Some((x, y)) => Some(self.go_to(*x, *y))
-        }
+    fn go_to_tree(&self, tree: &Tree, grid: &Grid, troll_paths: &mut Vec<Vec<(i32, i32)>>) -> String {
+        self.go_to(tree.x, tree.y, grid, troll_paths)
     }
 
-    fn go_to_grief(&self, grid: &Grid, trees: &Vec<Tree>) -> Option<String> {
-        match grid.tree_to_grief(trees) {
-            Some(pos) => Some(self.go_to(pos.0, pos.1)),
+    fn go_to_drop(&self, grid: &Grid, troll_paths: &mut Vec<Vec<(i32, i32)>>) -> Option<String> {
+        let available_drops = grid.drop_positions
+        .iter()
+        .filter(|&&(x, y)| grid.grid[y as usize][x as usize].can_walk_through())
+        .map(|tamere| *tamere)
+        .collect::<Vec<_>>();
+        Some(self.go_to_best_pos(&available_drops, grid, troll_paths))
+    }
+
+    fn go_to_mine(&self, grid: &Grid, troll_paths: &mut Vec<Vec<(i32, i32)>>) -> Option<String> {
+        Some(self.go_to_best_pos(&grid.mine_positions, grid, troll_paths))
+    }
+
+    fn go_to_grief(&self, grid: &Grid, trees: &Vec<Tree>, troll_paths: &mut Vec<Vec<(i32, i32)>>) -> Option<String> {
+        match grid.tree_to_grief_far_from_home(trees) {
+            Some(pos) => Some(self.go_to(pos.0, pos.1, grid, troll_paths)),
             None => None
         }
     }
@@ -700,32 +804,34 @@ impl Troll {
         format!("CHOP {}", self.id)
     }
 
-    fn act_as_poly(&mut self, grid: &Grid, trees: &Vec::<Tree>, inventory: &Inventory) -> Option<String> {
+    fn act_as_poly(&mut self, grid: &Grid, trees: &Vec::<Tree>, inventory: &Inventory, troll_paths: &mut Vec<Vec<(i32, i32)>>) -> Option<String> {
+        eprintln!("{}: I act_as_poly", self.id);
         if self.is_full() && (self.items[4] > 0 || self.items[5] > 0) {
             if self.can_drop(&grid.drop_positions) {
                 return Some(self.drop())
             }
-            return self.go_to_drop(grid)
+            return self.go_to_drop(grid, troll_paths)
         }
         match self.objective {
-            THIEF => self.act_as_thief(grid, trees),
-            THIEF_NO_WASTE => self.act_as_thief_no_waste(grid, trees),
-            BANANA_TRICKS => self.act_as_banana_tricks(grid, trees, inventory),
-            IRON => self.act_as_miner(grid, trees),
-            WOOD => self.act_as_choper(grid, trees),
-            _ => self.act_as_peasant(grid, trees, inventory)
+            THIEF => self.act_as_thief(grid, trees, troll_paths),
+            THIEF_NO_WASTE => self.act_as_thief_no_waste(grid, trees, troll_paths),
+            BANANA_TRICKS => self.act_as_banana_tricks(grid, trees, inventory, troll_paths),
+            IRON => self.act_as_miner(grid, trees, troll_paths),
+            WOOD => self.act_as_choper(grid, trees, troll_paths),
+            _ => self.act_as_peasant(grid, trees, inventory, troll_paths)
         }
     }
 
-    fn act_as_choper(&self, grid: &Grid, trees: &Vec::<Tree>) -> Option<String> {
+    fn act_as_choper(&self, grid: &Grid, trees: &Vec::<Tree>, troll_paths: &mut Vec<Vec<(i32, i32)>>) -> Option<String> {
+        eprintln!("{}: I act_as_choper", self.id);
         if self.objective == THIEF_NO_WASTE {
-            return self.act_as_thief_no_waste(grid, trees)
+            return self.act_as_thief_no_waste(grid, trees, troll_paths)
         }
         if self.can_drop(&grid.drop_positions) {
             return Some(self.drop())
         }
         if self.is_full() {
-            return self.go_to_drop(grid)
+            return self.go_to_drop(grid, troll_paths)
         }
         if self.can_chop(grid) {
             return Some(self.chop())
@@ -736,26 +842,28 @@ impl Troll {
             fruit => grid.find_shorter_available_fruit_to_cut((self.x, self.y), trees, Fruit::from_usize(fruit), 4),
         };
         match best_tree {
-            Some((_, tree)) => Some(self.go_to_tree(tree)),
+            Some((_, tree)) => Some(self.go_to_tree(tree, grid, troll_paths)),
             None => None
         }
     }
 
-    fn act_as_peasant(&mut self, grid: &Grid, trees: &Vec::<Tree>, inventory: &Inventory) -> Option<String> {
+    fn act_as_peasant(&mut self, grid: &Grid, trees: &Vec::<Tree>, inventory: &Inventory, troll_paths: &mut Vec<Vec<(i32, i32)>>) -> Option<String> {
+        eprintln!("{}: I act_as_peasant", self.id);
         match self.objective {
-            PLUM..=BANANA | ANY => self.act_as_harvester(grid, trees),
-            PLANT_PLUM..=PLANT_ANY => self.act_as_planter(grid, trees, inventory),
-            CUT_ALL => self.act_as_choper(grid, trees),
+            PLUM..=BANANA | ANY => self.act_as_harvester(grid, trees, troll_paths),
+            PLANT_PLUM..=PLANT_ANY => self.act_as_planter(grid, trees, inventory, troll_paths),
+            CUT_ALL => self.act_as_choper(grid, trees, troll_paths),
             _ => unreachable!("peasant cannot be asked for {}", self.objective)
         }
     }
 
-    fn act_as_harvester(&self, grid: &Grid, trees: &Vec::<Tree>) -> Option<String> {
+    fn act_as_harvester(&self, grid: &Grid, trees: &Vec::<Tree>, troll_paths: &mut Vec<Vec<(i32, i32)>>) -> Option<String> {
+        eprintln!("{}: I act_as_harvester", self.id);
         if self.can_drop(&grid.drop_positions) {
             return Some(self.drop())
         }
         if self.is_full() {
-            return self.go_to_drop(grid)
+            return self.go_to_drop(grid, troll_paths)
         }
         if self.can_harvest(grid, trees) {
             return Some(self.harvest())
@@ -765,12 +873,13 @@ impl Troll {
             fruit => self.find_shorter_fruit(trees, Fruit::from_usize(fruit))
         };
         match best_tree {
-            Some((_, tree)) => Some(self.go_to_tree(tree)),
+            Some((_, tree)) => Some(self.go_to_tree(tree, grid, troll_paths)),
             None => None
         }
     }
 
-    fn act_as_planter(&mut self, grid: &Grid, trees: &Vec::<Tree>, inventory: &Inventory) -> Option<String> {
+    fn act_as_planter(&mut self, grid: &Grid, trees: &Vec::<Tree>, inventory: &Inventory, troll_paths: &mut Vec<Vec<(i32, i32)>>) -> Option<String> {
+        eprintln!("{}: I act_as_planter", self.id);
         match self.empty() {
             true => {
                 if self.can_pick(&grid.drop_positions, inventory) {
@@ -783,14 +892,14 @@ impl Troll {
                 match best_tree {
                     None => {
                         if inventory.resources[self.objective - 7] > 0 {
-                            return self.go_to_drop(grid)
+                            return self.go_to_drop(grid, troll_paths)
                         }
                     },
                     Some((dist, tree)) => {
                         if inventory.resources[self.objective - 7] > 0 && (dist > self.dist_from_base(grid)) {
-                            return self.go_to_drop(grid)
+                            return self.go_to_drop(grid, troll_paths)
                         }
-                        return Some(self.go_to_tree(tree))
+                        return Some(self.go_to_tree(tree, grid, troll_paths))
                     }
                 }
             },
@@ -801,7 +910,7 @@ impl Troll {
                     }
                     match grid.nearest_empty_place_to_plant(4) {
                         None => {},
-                        Some((x, y)) => return Some(self.go_to(x, y))
+                        Some((x, y)) => return Some(self.go_to(x, y, grid, troll_paths))
                     }
                 }
             }
@@ -809,59 +918,64 @@ impl Troll {
 
         // If the target is impossible, do whatever.
         self.target(ANY);
-        return self.act_as_harvester(grid, trees);
+        return self.act_as_harvester(grid, trees, troll_paths);
     }
 
-    fn act_as_miner(&self, grid: &Grid, trees: &Vec::<Tree>) -> Option<String> {
+    fn act_as_miner(&self, grid: &Grid, trees: &Vec::<Tree>, troll_paths: &mut Vec<Vec<(i32, i32)>>) -> Option<String> {
+        eprintln!("{}: I act_as_miner", self.id);
         match self.objective {
             CHOP_PLUM..=CUT_ALL => {
-                return self.act_as_choper(grid, trees)
+                return self.act_as_choper(grid, trees, troll_paths)
             },
-            THIEF => return self.act_as_thief(grid, trees),
-            THIEF_NO_WASTE => return self.act_as_thief_no_waste(grid, trees),
+            THIEF => return self.act_as_thief(grid, trees, troll_paths),
+            THIEF_NO_WASTE => return self.act_as_thief_no_waste(grid, trees, troll_paths),
             _ => {   
                 if self.can_drop(&grid.drop_positions) {
                     return Some(self.drop())
                 }
                 if self.is_full() {
-                    return self.go_to_drop(grid)
+                    return self.go_to_drop(grid, troll_paths)
                 }
-                if self.can_mine(grid.mine_position) {
+                if self.can_mine(grid) {
                     return Some(self.mine())
                 }
-                return Some(self.go_to(grid.mine_position.0, grid.mine_position.1))
+                self.go_to_mine(grid, troll_paths)
             }
         }
     }
 
-    fn act_as_griefer(&self, grid: &Grid, trees: &Vec::<Tree>) -> Option<String> {
+    fn act_as_griefer(&self, grid: &Grid, trees: &Vec::<Tree>, troll_paths: &mut Vec<Vec<(i32, i32)>>) -> Option<String> {
+        eprintln!("{}: I act_as_griefer", self.id);
         if self.can_grief(grid, trees) {
             return Some(self.chop())
         }
-        self.go_to_grief(grid, trees)
+        self.go_to_grief(grid, trees, troll_paths)
     }
 
-    fn act_as_thief_no_waste(&self, grid: &Grid, trees: &Vec::<Tree>) -> Option<String> {
+    fn act_as_thief_no_waste(&self, grid: &Grid, trees: &Vec::<Tree>, troll_paths: &mut Vec<Vec<(i32, i32)>>) -> Option<String> {
+        eprintln!("{}: I act_as_thief_no_waste", self.id);
         if self.can_drop(&grid.drop_positions) {
             return Some(self.drop())
         }
         if self.is_full() {
-            return self.go_to_drop(grid)
+            return self.go_to_drop(grid, troll_paths)
         }
-        return self.act_as_griefer(grid, trees);
+        return self.act_as_griefer(grid, trees, troll_paths);
     }
 
-    fn act_as_thief(&self, grid: &Grid, trees: &Vec::<Tree>) -> Option<String> {
+    fn act_as_thief(&self, grid: &Grid, trees: &Vec::<Tree>, troll_paths: &mut Vec<Vec<(i32, i32)>>) -> Option<String> {
+        eprintln!("{}: I act_as_thief", self.id);
         if self.can_drop(&grid.drop_positions) {
             return Some(self.drop())
         }
         if self.is_full() && manhattan_dist((self.x, self.y), grid.enemy_shack_position) > manhattan_dist((self.x, self.y), grid.shack_position) {
-            return self.go_to_drop(grid)
+            return self.go_to_drop(grid, troll_paths)
         }
-        self.act_as_griefer(grid, trees)
+        self.act_as_griefer(grid, trees, troll_paths)
     }
 
-    fn act_as_banana_tricks(&mut self, grid: &Grid, trees: &Vec::<Tree>, inventory: &Inventory) -> Option<String> {
+    fn act_as_banana_tricks(&mut self, grid: &Grid, trees: &Vec::<Tree>, inventory: &Inventory, troll_paths: &mut Vec<Vec<(i32, i32)>>) -> Option<String> {
+        eprintln!("{}: I act_as_banana_tricks", self.id);
         if self.is_full() {
             if self.have_fruit(Fruit::Banana) > 0 {
                 return Some(self.plant_fruit(Fruit::Banana))
@@ -869,16 +983,20 @@ impl Troll {
             if self.can_drop(&grid.drop_positions) {
                 return Some(self.drop())
             }
-            return self.go_to_drop(grid)
+            return self.go_to_drop(grid, troll_paths)
+        }
+        self.target(CUT_ALL);
+        if self.can_chop(grid) {
+            return Some(self.chop())
         }
         if inventory.resources[BANANA] > 0 {
             if self.can_pick_fruit(&grid.drop_positions, inventory, Fruit::Banana) {
-                self.pick();
+                self.target(BANANA);
+                return Some(self.pick());
             }
-            return self.go_to_drop(grid)
+            return self.go_to_drop(grid, troll_paths)
         }
-        self.target(CUT_ALL);
-        self.act_as_choper(grid, trees)
+        self.act_as_choper(grid, trees, troll_paths)
     }
 
     // ENTRYPOINTS
@@ -888,14 +1006,14 @@ impl Troll {
         self.assigned = true;
     }
 
-    fn act(&mut self, grid: &Grid, trees: &Vec::<Tree>, inventory: &Inventory) -> Option<String> {
-        eprintln!("I'm a {}", self.class);
+    fn act(&mut self, grid: &Grid, trees: &Vec::<Tree>, inventory: &Inventory, troll_paths: &mut Vec<Vec<(i32, i32)>>) -> Option<String> {
+        eprintln!("{}: I'm a {}", self.id, self.class);
         match self.class {
-            TrollType::Poly => self.act_as_poly(grid, trees, inventory),
-            TrollType::Choper => self.act_as_choper(grid, trees),
-            TrollType::Griefer => self.act_as_griefer(grid, trees),
-            TrollType::Miner => self.act_as_miner(grid, trees),
-            TrollType::Peasant => self.act_as_peasant(grid, trees, inventory)
+            TrollType::Poly => self.act_as_poly(grid, trees, inventory, troll_paths),
+            TrollType::Choper => self.act_as_choper(grid, trees, troll_paths),
+            TrollType::Griefer => self.act_as_griefer(grid, trees, troll_paths),
+            TrollType::Miner => self.act_as_miner(grid, trees, troll_paths),
+            TrollType::Peasant => self.act_as_peasant(grid, trees, inventory, troll_paths),
         }
         
     }
@@ -1102,6 +1220,13 @@ impl Tile {
             _ => false
         }
     }
+
+    fn is_grass(&self) -> bool {
+        match self {
+            Tile::Grass(..) => true,
+            _ => false
+        }
+    }
 }
 
 #[derive(Clone)]
@@ -1124,7 +1249,7 @@ impl Grid {
         let inputs = input_line.split(" ").collect::<Vec<_>>();
         let width = parse_input!(inputs[0], i32);
         let height = parse_input!(inputs[1], i32);
-        let mut raw_mine_positions: Vec::<(i32, i32)> = vec![];
+        let mut raw_mine_side_positions: Vec::<(i32, i32)> = vec![];
         let mut shack_position: (i32, i32) = (0, 0);
         let mut enemy_shack_position: (i32, i32) = (0, 0);
         let mut raw_drop_positions = vec![];
@@ -1154,7 +1279,7 @@ impl Grid {
                         let pos_y = acc_outer.len() as i32;
                         safe_push_positions(
                             &vec![(pos_x + 1, pos_y), (pos_x - 1, pos_y), (pos_x, pos_y + 1), (pos_x, pos_y - 1)],
-                            &mut raw_mine_positions,
+                            &mut raw_mine_side_positions,
                             height,
                             width
                         );
@@ -1165,41 +1290,26 @@ impl Grid {
                 acc_outer
             });
         let drop_positions = raw_drop_positions
-            .iter()
-            .filter(|(x, y)| {
-                match grid[*y as usize][*x as usize] {
-                    Tile::Grass(_) => true,
-                    _ => false
-                }
-            })
-            .map(|a| *a)
-            .collect::<Vec<(i32, i32)>>();
+        .iter()
+        .filter(|(x, y)| {
+            match grid[*y as usize][*x as usize] {
+                Tile::Grass(_) => true,
+                _ => false
+            }
+        })
+        .map(|a| *a)
+        .collect::<Vec<(i32, i32)>>();
 
-        let mine_positions_iter = raw_mine_positions
-            .iter()
-            .filter(|(x, y)| {
-                match grid[*y as usize][*x as usize] {
-                    Tile::Grass(_) => true,
-                    _ => false
-                }
-            });
-
-        let (mine_dist, mine_position) = mine_positions_iter
-            .map(|&(x, y)| {
-                drop_positions
-                .iter()
-                .map(|&(drop_x, drop_y)| {
-                    (i32::abs(x - drop_x) + i32::abs(y - drop_y), (x, y))
-                })
-                .min_by(|a, b| {
-                    a.0.cmp(&b.0)
-                })
-                .unwrap()
-            })
-            .min_by(|a, b| {
-                a.0.cmp(&b.0)
-            })
-            .unwrap();
+        let mine_side_positions = raw_mine_side_positions
+        .iter()
+        .filter(|(x, y)| {
+            match grid[*y as usize][*x as usize] {
+                Tile::Grass(_) => true,
+                _ => false
+            }
+        })
+        .map(|a| *a)
+        .collect::<Vec<(i32, i32)>>();
 
         Grid {
             initial_grid: grid.clone(),
@@ -1207,11 +1317,26 @@ impl Grid {
             shack_position,
             enemy_shack_position,
             drop_positions: drop_positions.clone(),
-            mine_position,
-            mine_dist,
+            mine_positions: mine_side_positions.clone(),
+            mine_dist: 0,
             width,
             height
         }
+    }
+
+    fn set_mine_distance(&mut self) {
+        self.mine_dist = self.mine_positions
+        .iter()
+        .map(|&mine_side_position|
+            match a_star(self, self.shack_position, mine_side_position, 1, &mut vec![], true) {
+                None => None,
+                Some(v) => Some(v.len() - 1)
+            }
+        )
+        .filter(|mapped| mapped.is_some())
+        .map(|filtered| filtered.unwrap())
+        .min()
+        .unwrap() as i32;
     }
 
     fn update_tiles(&mut self, trolls: &Vec::<Troll>, e_trolls: &Vec::<Troll>, trees: &Vec::<Tree>) {
@@ -1382,7 +1507,7 @@ impl Grid {
         .min_by(|a, b| manhattan_dist(*a, self.shack_position).cmp(&manhattan_dist(*b, self.shack_position)))
     }
 
-    fn tree_to_grief(&self, trees: &Vec<Tree>) -> Option<(i32, i32)> {
+    fn tree_to_grief_far_from_home(&self, trees: &Vec<Tree>) -> Option<(i32, i32)> {
         trees
         .iter()
         .filter(|tree| self.grid[tree.y as usize][tree.x as usize].can_walk_through())
@@ -1392,6 +1517,13 @@ impl Grid {
     }
 
     fn tree_to_grief_ignore_walk_through(&self, trees: &Vec<Tree>) -> Option<(i32, i32)> {
+        trees
+        .iter()
+        .map(|tree| (tree.x, tree.y))
+        .min_by(|a, b| manhattan_dist(*a, self.enemy_shack_position).cmp(&manhattan_dist(*b, self.enemy_shack_position)))
+    }
+
+    fn tree_to_grief_whatever_dist(&self, trees: &Vec<Tree>) -> Option<(i32, i32)> {
         trees
         .iter()
         .map(|tree| (tree.x, tree.y))
@@ -1533,22 +1665,11 @@ fn near_strategy(inventory: &Inventory, game_state: &mut GameStateNear, round: i
 
     game_state.update();
 
-    let game_state_i32: i32 = (*game_state).into();
-
     match game_state {
         GameStateNear::Start(one) => {
-            let to_train = TrollType::Poly;
-            match inventory.train_asked(
-                [2, 2, 0, 2],
-                [2, 5, 0, 0, 5, 0],
-                trolls
-            ) {
-                Some(cmd) => {
-                    actions.push(cmd);
-                    *one = true;
-                },
-                None => {}
-            };
+            let train: [i32; 4] = TrollType::best_possible_train(inventory, 1);
+            actions.push(format!("TRAIN {} {} {} {}", train[0], train[1], train[2], train[3]));
+            *one = true;
         },
         GameStateNear::End => {
             trolls
@@ -1636,26 +1757,9 @@ fn distant_strategy(inventory: &Inventory, game_state: &mut GameStateDistant, ro
     match game_state {
         GameStateDistant::Start(peasant_trained, trees_to_plant) => {
             if !*peasant_trained {
-                let to_train = TrollType::Peasant;
-                match inventory.train_asked(
-                    to_train.charac_need(
-                        game_state_i32,
-                        grid.mine_dist),
-                    to_train.cost(
-                        game_state_i32,
-                        grid.mine_dist,
-                        trolls.len() as i32
-                    ),
-                    trolls
-                ) {
-                    Some(cmd) => {
-                        actions.push(cmd);
-                        *peasant_trained = true;
-                    },
-                    None => {
-                        grid.assign_plants(4, [1, 1, 1, 0], trolls);
-                    }
-                };
+                let train = TrollType::best_possible_train(inventory, 1);
+                actions.push(format!("TRAIN {} {} {} {}", train[0], train[1], train[2], train[3]));
+                *peasant_trained = true;
             }
             else if !grid.assign_plants(4, [2, 2, 2, 1], trolls) {
                 *trees_to_plant = true;
@@ -1740,8 +1844,14 @@ fn distant_strategy(inventory: &Inventory, game_state: &mut GameStateDistant, ro
 
 fn main() {
     let mut grid = Grid::new();
+    grid.set_mine_distance();
     let map_type = match manhattan_dist(grid.shack_position, grid.enemy_shack_position) {
-        n if n > 6 => DISTANT,
+        n if n > 6 => {
+            match grid.drop_positions.len() {
+                n if n <= 2 => NEAR,
+                _ => DISTANT
+            }
+        },
         _ => NEAR
     };
     let mut game_state_distant: GameStateDistant = 0.into();
@@ -1752,6 +1862,7 @@ fn main() {
     loop {
         round += 1;
         let mut actions = vec![];
+        let mut troll_paths: Vec<Vec<(i32, i32)>> = vec![];
 
         let (
             inventory, e_inventory, mut trolls, mut enemy_trolls, mut trees
@@ -1767,7 +1878,7 @@ fn main() {
         // TROLLS ACTIONS
 
         for mut troll in trolls {
-            match troll.act(&grid, &trees, &inventory) {
+            match troll.act(&grid, &trees, &inventory, &mut troll_paths) {
                 Some(a) => actions.push(a),
                 _ => {}
             }
